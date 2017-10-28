@@ -1,0 +1,326 @@
+---
+title: "Vocera Messaging Dashboard"
+author: "Gustavo Gonzalez"
+date: "August 22, 2017"
+output:
+  html_document: default
+  pdf_document: default
+---
+## .
+## Messaging Volumes:
+
+The following visualization represents the call volumes between users. The vertical bars represent users or roles and increase in size as that user becomes more active in the system. The communication threads are individually depicted but are also represented as a collective communication between two parties. Hovering over the communication bands shows the number of individual threads along with the number of messages sent from each party.
+
+
+```{r sankeysetup, echo=FALSE}
+####GLOBAL VARIABLES####
+##------------Library Location Variable---------------##
+libloc='C:/Users/ggonzalez/R'
+library("RODBC", lib.loc=libloc)
+dbhandle <- odbcDriverConnect('driver={SQL Server};server=10.134.13.36;database=WICMASTER;uid=saVoc;pwd=saVoc45')
+
+##Packages#
+#install.packages("RODBC", lib=libloc)
+#install.packages("networkD3", lib=libloc)
+library("networkD3", lib.loc=libloc)
+
+
+
+#SANKEY VARIABLES#
+#This variable is used to control the use of either a file based on the last DB pull or a live DB connection.
+#Setting filesourse to FALSE will use an existing file in the "dataset" folder, TRUE will establish a live connection to the DB
+filesource = FALSE
+#the titlevisualization valrable controls wether the visual will show clinician names or only their titles/roles.
+#setting this to FALSE will display names, TRUE will display only their titles
+titlevisualization = TRUE
+
+
+#Import Dataset using odbc connection and create files from DB query if filesource is TRUE
+if (filesource == FALSE){
+  write.csv(ds_users <- db_users <- sqlQuery(dbhandle, "SELECT * FROM [WICMASTER].[dbo].[Users] WHERE ID > 0 AND Login NOT LIKE '%Android%' AND login NOT LIKE 'iOS%' AND Active = 'Y'"), 'dataset/ds_users.csv')
+  write.csv(ds_distribution_lists <-db_distribution_lists <- sqlQuery(dbhandle, 'SELECT *FROM [WICMASTER].[dbo].[DistLists]'),'dataset/ds_distribution-list.csv')
+  write.csv(ds_TextConversationRcpDistLists <- db_TextConversationRcpDistLists<- sqlQuery(dbhandle, 'SELECT * FROM [WICMASTER].[dbo].[TextConversationRcpDistLists]'), 'dataset/ds_TextConversationRcpDistLists.csv')
+  write.csv(ds_TextConversationRcpUsers <- db_TextConversationRcpUsers<- sqlQuery(dbhandle, 'SELECT * FROM [WICMASTER].[dbo].[TextConversationRcpUsers]'), 'dataset/ds_TextConversationRcpUsers.csv')
+  write.csv(ds_TextConversationParticipants <- db_TextConversationParticipants<- sqlQuery(dbhandle, 'SELECT * FROM [WICMASTER].[dbo].[TextConversationParticipants]'), 'dataset/ds_TextConversationParticipants.csv')
+  write.csv(ds_TextConversations <- db_TextConversations<- sqlQuery(dbhandle, 'SELECT * FROM [WICMASTER].[dbo].[TextConversations]'), 'dataset/ds_TextConversations.csv')
+  odbcCloseAll()
+} else{
+  ds_users <- read.csv('dataset/ds_users.csv', fileEncoding="UTF-8-BOM")
+  ds_distribution_lists <- read.csv ('dataset/ds_distribution-list.csv', fileEncoding="UTF-8-BOM")
+  ds_TextConversationParticipants <- read.csv ('dataset/ds_TextConversationParticipants.csv', fileEncoding="UTF-8-BOM")
+  ds_TextConversationRcpDistLists <- read.csv ('dataset/ds_TextConversationRcpDistLists.csv', fileEncoding="UTF-8-BOM")
+  ds_TextConversationRcpUsers <- read.csv ('dataset/ds_TextConversationRcpUsers.csv', fileEncoding="UTF-8-BOM")
+  ds_TextConversations <- read.csv ('dataset/ds_TextConversations.csv', fileEncoding="UTF-8-BOM")
+}
+
+#Add unique identifiers to datasets (Vocera identifiers are not unique across users,groups and distribution lists)
+#Required to fit this data into the edges dataframe
+ds_users <- transform(ds_users, ID = sprintf('u%s', ID))
+ds_distribution_lists <- transform(ds_distribution_lists, ID = sprintf('dl%s', ID))
+ds_TextConversationParticipants <- transform(ds_TextConversationParticipants, UserID = sprintf('u%s', UserID))
+ds_TextConversationRcpDistLists<- transform(ds_TextConversationRcpDistLists, DistListID = sprintf('dl%s', DistListID))
+ds_TextConversationRcpUsers<- transform(ds_TextConversationRcpUsers, UserID = sprintf('u%s', UserID))
+ds_TextConversations<- transform(ds_TextConversations, CreatorUserID = sprintf('u%s', CreatorUserID))
+
+
+#BUILD NODES WITH ALL USERS AND DISTRIBUTION LISTS
+nodes <- data.frame(type= character(0), 
+                    name= character(0), 
+                    title= character(0), 
+                    shape = character(0), 
+                    color = character(0), 
+                    uniqueID = character(0),
+                    excluded = character(0),
+                    stringsAsFactors=FALSE)
+
+for (i in 1:nrow(ds_users)){
+  if (ds_users$ID[i] %in% ds_TextConversationRcpUsers$UserID || ds_users$ID[i] %in% ds_TextConversationParticipants$UserID || ds_users$ID[i] %in% ds_TextConversations$CreatorUserID)
+    nodes[nrow(nodes)+1,] <- c("user", toString(ds_users$DisplayName[i]), toString(ds_users$Title[i]), "triangle", "LightSlateGray", ds_users$ID[i], "N")
+}
+for (i in 1:nrow(ds_distribution_lists)){
+  if (ds_distribution_lists$ID[i] %in% ds_TextConversationRcpDistLists$DistListID)
+    nodes[nrow(nodes)+1,] <- c("dl", toString(ds_distribution_lists$Name[i]), paste(toString(ds_distribution_lists$Name[i]), " Call Group"), "circle", "orange", ds_distribution_lists$ID[i], "N")
+}
+for (i in 1:nrow(ds_TextConversations)){
+  if (ds_TextConversations$ID[i] %in% ds_TextConversationRcpDistLists$ConversationID){
+    ds_TextConversations$Convotype[i] = "Distribution List Convo"
+}else{
+  ds_TextConversations$Convotype[i] = "User Convo"
+}
+}
+
+#EXCLUDE USERS FROM VISUALS
+nodes$excluded[nodes$uniqueID == "u1"] <- "Y"
+nodes$excluded[nodes$uniqueID == "u17"] <- "Y"
+nodes$excluded[nodes$uniqueID == "u10"] <- "Y"
+nodes$excluded[nodes$uniqueID == "u15"] <- "Y"
+nodes$excluded[nodes$uniqueID == "dl8"] <- "Y"
+nodes$excluded[nodes$uniqueID == "dl18"] <- "Y"
+nodes$excluded[nodes$uniqueID == "dl19"] <- "Y"
+nodes$excluded[nodes$uniqueID == "dl22"] <- "Y"
+#Remove all nodes that are flagged as excluded
+nodes<-nodes[!(nodes$excluded=="Y"),]
+
+#Clean up nodes and converts "NA"'s to NA and populate generated nodeid
+nodes$id <- seq.int(nrow(nodes))-1
+nodes <- nodes[, c("id", "type", "name", "title", "shape", "color", "uniqueID", "excluded")]
+nodes[nodes=="NA"] <-NA
+
+#Create titlenodes for generating title senkey diagram
+titlenodes <- nodes
+titlenodes <- nodes[, c("type","title")]
+titlenodes[titlenodes=="NA"] <-NA
+titlenodes <- unique(titlenodes)
+titlenodes$id <- seq.int(nrow(titlenodes))-1
+
+#BUILD RELATIONSHIPS FOR EDGES based on distribution lists and and add Unique identifier from the nodes dataframe for each distribution list matching the unique id against the source distribution list
+links <- data.frame(convoid = numeric(0), 
+                    Convotype = character(0), 
+                    source = numeric(0), 
+                    creatorname = character(0), 
+                    creatortitle = character(0), 
+                    target = numeric(0), 
+                    targetname = character(0), 
+                    targettitle = character(0), 
+                    stringsAsFactors=FALSE)
+
+#iterate through the conversation participants table and add them to the links dataset
+for (i in 1:nrow(ds_TextConversationParticipants)){
+  if (ds_TextConversationParticipants$UserID[i] %in% nodes$uniqueID){
+    creatoruniqueid <- ds_TextConversations$CreatorUserID[match(ds_TextConversationParticipants$ConversationID[i], ds_TextConversations$ID)]
+    creatorid <- nodes$id[match(creatoruniqueid, nodes$uniqueID)]
+    creatorname <- nodes$name[match(creatoruniqueid, nodes$uniqueID)]
+    creatortitle <- nodes$title[match(creatoruniqueid, nodes$uniqueID)]
+    targetuniqueid <- ds_TextConversationParticipants$UserID[i]
+    targetid <- nodes$id[match(targetuniqueid, nodes$uniqueID)]
+    creatorexcluded <- nodes$excluded[match(creatoruniqueid, nodes$uniqueID)]
+    targetexcluded <- nodes$excluded[match(targetuniqueid, nodes$uniqueID)]
+    
+    if (ds_TextConversationParticipants$UserID[i] != creatoruniqueid && !is.na(creatorid) && creatorexcluded != "Y" || targetexcluded != "N"){
+    links[nrow(links)+1,] <- c(as.integer(ds_TextConversationParticipants$ConversationID[i]),
+                               ds_TextConversations$Convotype[match(ds_TextConversationParticipants$ConversationID[i], ds_TextConversations$ID)],
+                               as.integer(creatorid),
+                               toString(creatorname),
+                               toString(creatortitle),
+                               as.integer(targetid),
+                               toString(nodes$name[match(ds_TextConversationParticipants$UserID[i], nodes$uniqueID)]),
+                               toString(nodes$title[match(ds_TextConversationParticipants$UserID[i], nodes$uniqueID)])
+                               )
+    }
+  }
+}
+links[links=="NA"] <-NA
+
+#Find unique links and consolodate conversation threads between entities and sum message counts
+links <- unique(links[,1:8])
+
+
+#Create Summary dataframe to contain title links and total messages
+summary_communication <- data.frame(sourceid = numeric(0),
+                                    source = character(0),
+                                    targetid = numeric(0),
+                                    target = character(0),
+                                    totalmessages = numeric(0),
+                                    stringsAsFactors=FALSE)
+for (i in 1:nrow(links)){
+  links$totalmessages[i] <- ds_TextConversations$TotalMessages[match(links$convoid[i], ds_TextConversations$ID)]
+  summary_communication[nrow(summary_communication)+1,] <- c(NA,toString(links$creatortitle[i]), NA, toString(links$targettitle[i]), as.integer(links$totalmessages[i]))
+}
+summary_communication <- unique(summary_communication[,1:5])
+summary_communication$totalmessages <- as.integer(summary_communication$totalmessages)
+
+
+#Add titlenodes Id's to Summary dataframe
+for (i in 1:nrow(summary_communication)){
+  summary_communication$sourceid[i] <- titlenodes$id[match(summary_communication$source[i], titlenodes$title)]
+  summary_communication$targetid[i] <- titlenodes$id[match(summary_communication$target[i], titlenodes$title)]
+}
+
+#Reorder Links and Summary_Communication by totalmessages and save a .csv copy into the dataset folder
+links<- links[with(links, order(-totalmessages)), ]
+summary_communication<- summary_communication[with(summary_communication, order(-totalmessages, source, target)), ]
+write.csv(links, file = "dataset/links.csv")
+write.csv(summary_communication, file = "dataset/summary_communication.csv")
+
+sankey = list()
+
+if (titlevisualization == FALSE){
+  sankey$nodes <- data.frame(name = titlenodes$title, stringsAsFactors =FALSE)
+  sankey$links <- data.frame(source = as.integer(summary_communication$sourceid), target = as.integer(summary_communication$targetid), value = summary_communication$totalmessages)
+  
+}else{
+  sankey$nodes <- data.frame(name = titlenodes$title, stringsAsFactors =FALSE)
+  sankey$links <- data.frame(source = as.integer(summary_communication$sourceid), target = as.integer(summary_communication$targetid), value = summary_communication$totalmessages)
+}  
+```
+
+```{r sankey-title, echo=FALSE}
+sankeyNetwork(Links = sankey$links, Nodes = sankey$nodes, Source = "source",
+                Target = "target", Value = "value", NodeID = "name",
+                units = "\n messages sent", fontSize = 14, nodeWidth = 65, sinksRight = TRUE, iterations = 500, width = 900)
+```
+
+```{r setup, include=FALSE}
+# knitr::opts_chunk$set(echo = FALSE)
+#Library install and setup
+# install.packages("ggplot2", lib=libloc)
+# install.packages("ggbeeswarm", lib=libloc)
+# install.packages("reshape2", lib=libloc)
+# install.packages("plotly", lib=libloc)
+
+library(ggbeeswarm, lib=libloc)
+library("RODBC", lib=libloc)
+library("beeswarm", lib=libloc)
+library(plotly, lib=libloc)
+library(reshape2, lib=libloc)
+library(ggplot2, lib=libloc)
+
+
+#BOXPLOT VARIABLES#
+#This variable is used to control the use of either a file based on the last DB pull or a live DB connection.
+#Setting filesourse to FALSE will use an existing file in the "dataset" folder, TRUE will establish a live connection to the DB
+filesource = FALSE
+#Setting the dummydata variable to TRUE will use a file within the "dataset" folder rather than data from the DB.
+#This is useful when your DB does not contain enough coonsult data
+dummydata = TRUE
+dbhandle <- odbcDriverConnect('driver={SQL Server};server=10.134.13.36;database=WICMASTER;uid=saVoc;pwd=saVoc45')
+
+
+#Create datasets from DB with list of consult id's, consult and consult response details.
+if (filesource == FALSE){
+  write.csv(ds_users <- sqlQuery(dbhandle, "SELECT * FROM [WICMASTER].[dbo].[Users] WHERE ID > 0 AND Login NOT LIKE '%Android%' AND login NOT LIKE 'iOS%' AND Active = 'Y'"), 'dataset/ds_users.csv')
+  write.csv(ds_consult_ids <- sqlQuery(dbhandle, "SELECT [ID] FROM [WICMASTER].[dbo].[TextConversations] WHERE Subject IN ('! Urgent Clinical Consultation !', '* Clinical Consultation *')"), 'dataset/ds_consult_ids.csv')
+  # ds_consult_ids <- paste(ds_consult_ids$ID, collapse=",")
+  write.csv(ds_consult_details <- sqlQuery(dbhandle, paste("SELECT * FROM [WICMASTER].[dbo].[TextMessages] WHERE ConversationID IN (",paste(ds_consult_ids$ID, collapse=","),") AND SeqNo =0", sep="")), 'dataset/ds_consult_details.csv')
+  write.csv(ds_consult_response_details <- sqlQuery(dbhandle, paste("SELECT * FROM [WICMASTER].[dbo].[TextMessages] WHERE ConversationID IN (",paste(ds_consult_ids$ID, collapse=","),") AND SeqNo =1", sep="")), 'dataset/ds_consult_response_details.csv')
+  odbcCloseAll()
+} else{
+  ds_users <- read.csv('dataset/ds_users.csv', fileEncoding="UTF-8-BOM")
+  ds_consult_ids <- read.csv('dataset/ds_consult_ids.csv', fileEncoding="UTF-8-BOM")
+  ds_consult_details <- read.csv('dataset/ds_consult_details.csv', fileEncoding="UTF-8-BOM")
+  ds_consult_response_details <- read.csv('dataset/ds_consult_response_details.csv', fileEncoding="UTF-8-BOM")
+}
+
+#create message response data set
+ds_response_times <- data.frame(conversationID= numeric(0), 
+                    severity= numeric(0), 
+                    consult_requestor_id= numeric(0),
+                    consult_requestor_title= character(0),
+                    consult_responder_id = numeric(0),
+                    consult_responder_title= character(0),
+                    request_datetime = character(0), 
+                    response_datetime = character(0),
+                    response_time = character(0),
+                    stringsAsFactors=FALSE)
+
+#Cycle through the ds_consult_details data set, and populate the ds_response_times with consult and response details
+for (i in 1:nrow(ds_consult_details)){
+  if (ds_consult_details$ConversationID[i] %in% ds_consult_response_details$ConversationID)
+    ds_response_times[nrow(ds_response_times)+1,] <- c(ds_consult_details$ConversationID[i], ds_consult_details$Severity[i], ds_consult_details$CreatorUserID[i], toString(ds_users$Title[match(ds_consult_details$CreatorUserID[i], ds_users$ID)]), ds_consult_response_details$CreatorUserID[i], toString(ds_users$Title[match(ds_consult_response_details$CreatorUserID[i], ds_users$ID)]), as.Date(ds_consult_details$InTime[i], "%Y-%M-%D %H:%M:%S"), as.Date(ds_consult_response_details$InTime[i], "%Y-%M-%D %H:%M:%S"), difftime(ds_consult_response_details$InTime[i],ds_consult_details$InTime[i], units="min"))
+}
+ds_response_times$severity[ds_response_times$severity ==0] <-"Regular Consult"
+ds_response_times$severity[ds_response_times$severity ==2] <-"Urgent Consult"
+ds_response_times$response_time <- round(as.numeric(ds_response_times$response_time), digits = 0)
+write.csv(ds_response_times, 'dataset/ds_response_times.csv')
+
+#check if dummy data is to be used and load the dummy data file
+if (dummydata == TRUE){
+  ds_response_times <- read.csv("dataset/ds_dummy_response_times.csv")
+}
+
+#Create an average response rate summary dataframe by profession 
+consult_response_by_profession <- dcast(aggregate(ds_response_times$response_time, by=list(ds_response_times$consult_responder_title, ds_response_times$severity), FUN=mean), Group.1~Group.2)
+
+#Summary clean up, rename first column to "Profession" and round off consult to a one digit value
+colnames(consult_response_by_profession)[colnames(consult_response_by_profession)=="Group.1"] <- "Profession"
+consult_response_by_profession$`Regular Consult` <- round(as.numeric(consult_response_by_profession$`Regular Consult`), digits = 0)
+
+consult_response_by_profession$`Urgent Consult` <- round(as.numeric(consult_response_by_profession$`Urgent Consult`), digits = 0)
+
+#Reorder consult respond times(%) by descending values
+consult_response_by_profession <- consult_response_by_profession[order(consult_response_by_profession$`Urgent Consult`, consult_response_by_profession$`Urgent Consult`),]
+
+# consult_response_by_profession <- consult_response_by_profession[order(as.numeric(consult_response_by_profession$`Regular Consult`)),]
+cat("</br>")
+```
+
+## Consult Response Rates by Profession and by Severity:
+
+The following box plot visualizes the response rate for Regular and Urgent consults, broken down by each individual Profession. The box identifies the distribution of consults for each individual profession, with a line identifying the average response time within that range.
+
+```{r severity, echo=FALSE, warning = FALSE}
+p <- plot_ly(ds_response_times, y = ~response_time, x=~consult_responder_title, color = ~severity, type = "box", split = ~severity)
+p
+
+```
+
+## Consult Responses by Severity
+The following box plot visualizes the individual consults represented by colored points and further broken up by severity (Regular, or Urgent). The box identifies the distribution of the consult responses and identifies the average response time within that range, which is represented by a black line 
+
+```{r responses, echo=FALSE}
+#Plot the resuklts using the Beeswarm box plot
+ beeswarm(response_time ~ severity, data= ds_response_times,
+          method = 'swarm',
+          pch=16, pwcol = as.numeric(consult_responder_id),
+          xlim = c(0, 4), ylim = NULL,
+          xlab = '', ylab = 'Consult Response Time (Mins)')
+          legend("bottomright", legend = unique(ds_response_times$consult_responder_title),
+                 title = 'Consult Responders', pch = 16, col=unique(as.numeric(ds_response_times$consult_responder_id)))
+
+boxplot(response_time ~ severity, data= ds_response_times, add = T, names = c("",""), col="#0000ff22", range =0)
+
+```
+
+## Average Consult Response Time by Profession
+
+```{r average-time-hist, echo=FALSE, warning = FALSE}
+p <- plot_ly(consult_response_by_profession, x = ~Profession, y = ~`Regular Consult`, type = 'bar', name = 'Regular Consults') %>%
+  add_trace(y = ~`Urgent Consult`, name = 'Urgent Consult') %>%
+  layout(yaxis = list(title = 'Response Time (mins)'), barmode = 'group')
+p
+```
+
+```{r average-time-table, echo=FALSE, warning = FALSE}
+library(knitr)
+knitr::kable(consult_response_by_profession)
+```
